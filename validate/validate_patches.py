@@ -4,12 +4,13 @@ import os
 import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from distutils.dir_util import copy_tree
 
 from tqdm import tqdm
 
 def timeout_handler(signum, frame):
-    raise Exception("Function execution exceeded the timeout limit")
+    raise TimeoutError("Function execution exceeded the timeout limit")
 
 class Validator:
 
@@ -29,7 +30,11 @@ class Validator:
     def validate_patch(self, patch_index):
         self.apply_patch(patch_index)
         try:
-            self.compile_defects4j_project(patch_index)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.compile_defects4j_project, patch_index)
+                future.result(timeout=15 * 60)
+        except TimeoutError:
+            self.write_patch(patch_index, 'timeout')
         except Exception as e:
             self.write_patch(patch_index, 'uncompilable')
             return
@@ -112,17 +117,10 @@ def main():
             shutil.rmtree('tmp')
 
         validation_results_path = os.path.join('validation_results', bug_id)
-
-        if not os.path.exists(os.path.join(validation_results_path, 'uncompilable')):
-            os.makedirs(os.path.join(validation_results_path, 'uncompilable'))
-        if not os.path.exists(os.path.join(validation_results_path, 'failing')):
-            os.makedirs(os.path.join(validation_results_path, 'failing'))
-        if not os.path.exists(os.path.join(validation_results_path, 'plausible')):
-            os.makedirs(os.path.join(validation_results_path, 'plausible'))
+        create_patch_directories(validation_results_path)
 
         checkout_defects4j_project(project, bug_number, f'tmp/original_projects/{project}-{bug_number}')
-        for patch_index, patch in enumerate(all_patches):
-            copy_tree(f'tmp/original_projects/{project}-{bug_number}', f'tmp/clones/{project}-{bug_number}/patch-{patch_index}')
+        create_clones(all_patches, project, bug_number)
 
         validators = []
         validator_patches = []
@@ -143,8 +141,22 @@ def main():
         for thread in threads:
             thread.join()
 
+def create_patch_directories(validation_results_path):
+    if not os.path.exists(os.path.join(validation_results_path, 'uncompilable')):
+        os.makedirs(os.path.join(validation_results_path, 'uncompilable'))
+    if not os.path.exists(os.path.join(validation_results_path, 'failing')):
+        os.makedirs(os.path.join(validation_results_path, 'failing'))
+    if not os.path.exists(os.path.join(validation_results_path, 'plausible')):
+        os.makedirs(os.path.join(validation_results_path, 'plausible'))
+        if not os.path.exists(os.path.join(validation_results_path, 'timeout')):
+            os.makedirs(os.path.join(validation_results_path, 'timeout'))
 
-
+def create_clones(all_patches, project, bug_number):
+    for patch_index, patch in enumerate(all_patches):
+        if not os.path.exists(f'tmp/clones/{project}-{bug_number}'):
+            os.makedirs(f'tmp/clones/{project}-{bug_number}')
+        copy_tree(f'tmp/original_projects/{project}-{bug_number}',
+                  f'tmp/clones/{project}-{bug_number}/patch-{patch_index}')
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', type=str, required=True, help='bug dataset path')
