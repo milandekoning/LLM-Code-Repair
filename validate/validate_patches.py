@@ -9,6 +9,8 @@ from distutils.dir_util import copy_tree
 
 from tqdm import tqdm
 
+lock = threading.Lock()
+
 def timeout_handler(signum, frame):
     raise TimeoutError("Function execution exceeded the timeout limit")
 
@@ -29,15 +31,15 @@ class Validator:
 
     def validate_patch(self, patch_index):
         self.apply_patch(patch_index)
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
                 future = executor.submit(self.compile_defects4j_project, patch_index)
                 future.result(timeout=15 * 60)
-        except TimeoutError:
-            self.write_patch(patch_index, 'timeout')
-        except Exception as e:
-            self.write_patch(patch_index, 'uncompilable')
-            return
+            except TimeoutError:
+                self.write_patch(patch_index, 'timeout')
+            except Exception as e:
+                self.write_patch(patch_index, 'uncompilable')
+                return
 
         self.test_defects4j_project(patch_index)
         failing_tests_output = self.get_failing_tests_output(patch_index)
@@ -85,8 +87,9 @@ class Validator:
     def write_patch(self, patch_index, result):
 
         path = os.path.join(self.validation_results_path, result,f'patch-{patch_index}')
-        with open(path, 'w') as f:
-           f.write(self.all_patches[patch_index])
+        with lock:
+            with open(path, 'w') as f:
+               f.write(self.all_patches[patch_index])
 
 
 def checkout_defects4j_project(project, bug_number, working_directory):
@@ -131,6 +134,8 @@ def main():
         for patch_index, patch in enumerate(all_patches):
             validator_patches[patch_index % number_of_threads].append(patch_index)
 
+        assert_disjoint(validator_patches)
+
         threads = []
 
         for thread in range(number_of_threads):
@@ -140,6 +145,12 @@ def main():
 
         for thread in threads:
             thread.join()
+
+def assert_disjoint(validator_patches):
+    for i, _ in enumerate(validator_patches):
+        for j, _ in enumerate(validator_patches):
+            if i != j:
+                assert len(set(validator_patches[i]).intersection(set(validator_patches[j]))) == 0, f"Patches {validator_patches[i]} and {validator_patches[j]} are not disjoint"
 
 def create_patch_directories(validation_results_path):
     if not os.path.exists(os.path.join(validation_results_path, 'uncompilable')):
