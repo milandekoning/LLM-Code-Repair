@@ -1,97 +1,77 @@
 import json
 import argparse
-import os
-import shutil
-import subprocess
-import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from distutils.dir_util import copy_tree
+from concurrent.futures import ThreadPoolExecutor
 
 from tqdm import tqdm
+import shutil
+import subprocess
+import os
+from distutils.dir_util import copy_tree
 
-lock = threading.Lock()
+class CompileError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
 
-def timeout_handler(signum, frame):
-    raise TimeoutError("Function execution exceeded the timeout limit")
+class TestError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
 
-class Validator:
+def main():
+    bugs_path = args.b
+    patches_path = args.p
+    number_of_threads = int(args.t)
 
-    def __init__(self, bug_id, bug_entry, all_patches,validation_results_path, working_directory):
-        self.bug_id = bug_id
-        self.project = bug_id.split('-')[0]
-        self.bug_number = bug_id.split('-')[1]
-        self.bug = bug_entry
-        self.validation_results_path = validation_results_path
-        self.working_directory = working_directory
-        self.all_patches = all_patches
-
-    def validate_patches(self, patch_indices):
-        for patch_index in patch_indices:
-            self.validate_patch(patch_index)
-
-    def validate_patch(self, patch_index):
-        self.apply_patch(patch_index)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            try:
-                future = executor.submit(self.compile_defects4j_project, patch_index)
-                future.result(timeout=15 * 60)
-                future = executor.submit(self.test_defects4j_project, patch_index)
-                future.result(timeout=15 * 60)
-            except TimeoutError:
-                self.write_patch(patch_index, 'timeout')
-                return
-            except Exception as e:
-                self.write_patch(patch_index, 'uncompilable')
-                return
-        failing_tests_output = self.get_failing_tests_output(patch_index)
-
-        if failing_tests_output == "":
-            self.write_patch(patch_index, 'plausible')
-        else:
-            self.write_patch(patch_index, 'failing')
+    with open(bugs_path, 'r') as f:
+        bugs = json.load(f)
+    with open(patches_path, 'r') as f:
+        patches = json.load(f)
 
 
+    for bug_index, bug_id in enumerate(bugs):
+        print(f"Currently on bug {bug_index + 1} out of {len(bugs)}")
+        clones_directory, validation_results_path = setup_project(bug_id, patches)
+        bug_patches = patches[bug_id]
 
-    def apply_patch(self, patch_index):
-        project_file = self.bug['loc']
-        start_line = self.bug['start']
-        end_line = self.bug['end']
-        patch = self.all_patches[patch_index]
+        with ThreadPoolExecutor(max_workers=number_of_threads) as executor:
+            patch_evaluations = []
+            for patch_index, patch in enumerate(bug_patches):
+                clone_directory = os.path.join(clones_directory, f'patch-{patch_index}')
+                patch_evaluation = executor.submit(validate_patch, bugs[bug_id], patch, clone_directory)
+                patch_evaluations.append(patch_evaluation)
 
-        file_path = os.path.join(self.working_directory, f'patch-{patch_index}', project_file)
-        with open(file_path, 'r', encoding="utf-8") as f:
-            lines = f.readlines()
+            for patch_index, patch_evaluation in tqdm(enumerate(patch_evaluations), total=len(patch_evaluations)):
+                try:
+                    patch_passes_tests = patch_evaluation.result(timeout=15*60)
+                    if patch_passes_tests:
+                        write_patch(validation_results_path, patch, patch_index, 'plausible')
+                    else:
+                        write_patch(validation_results_path, patch, patch_index, 'failing')
+                except CompileError:
+                    write_patch(validation_results_path, patch, patch_index, 'uncompilable')
+                except TimeoutError:
+                    write_patch(validation_results_path, patch, patch_index, 'timeout')
 
-        new_lines = lines[:start_line - 1] + patch.splitlines(keepends=True) + lines[end_line:]
 
-        with open(file_path, 'w', encoding="utf-8") as f:
-            f.writelines(new_lines)
 
-    def compile_defects4j_project(self, patch_index):
-        patch_directory = os.path.join(self.working_directory, f'patch-{patch_index}')
-        command = ["defects4j", "compile", '-w', patch_directory]
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(result.stderr)
+def setup_project(bug_id, patches):
+    project = bug_id.split('-')[0]
+    bug_number = bug_id.split('-')[1]
 
-    def test_defects4j_project(self, patch_index):
-        patch_directory = os.path.join(self.working_directory, f'patch-{patch_index}')
-        command = ["defects4j", "test", '-w', patch_directory]
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(result.stderr)
+    tmp_directory = 'tmp'
+    original_directory = os.path.join(tmp_directory, 'original_projects', f'{project}-{bug_number}')
 
-    def get_failing_tests_output(self, patch_index):
-        with open(os.path.join(self.working_directory, f'patch-{patch_index}', 'failing_tests'), 'r') as f:
-            return f.read()
+    clean_tmp_directory(tmp_directory)
+    checkout_defects4j_project(project, bug_number, original_directory)
+    clones_directory = create_clones(project, bug_number, patches[bug_id], original_directory)
 
-    def write_patch(self, patch_index, result):
+    validation_results_path = os.path.join('validation_results', bug_id)
+    create_patch_directories(validation_results_path)
 
-        path = os.path.join(self.validation_results_path, result,f'patch-{patch_index}')
-        with lock:
-            with open(path, 'w') as f:
-               f.write(self.all_patches[patch_index])
+    return clones_directory, validation_results_path
 
+def clean_tmp_directory(tmp_directory):
+    if os.path.exists(tmp_directory):
+        shutil.rmtree(tmp_directory)
 
 def checkout_defects4j_project(project, bug_number, working_directory):
     command = ["defects4j", "checkout", "-p", project, "-v", f"{bug_number}b", "-w", working_directory]
@@ -99,76 +79,62 @@ def checkout_defects4j_project(project, bug_number, working_directory):
     if result.returncode != 0:
         raise Exception(result.stderr)
 
-def main():
-    bugs_path = args.b
-    patches_path = args.p
+def create_clones(project, bug_number, patches, original_directory):
+    clones_directory = os.path.join('tmp', 'clones', f'{project}-{bug_number}')
+    for patch_index, patch in enumerate(patches):
+        os.makedirs(clones_directory, exist_ok=True)
+        copy_tree(original_directory, os.path.join(clones_directory, f'patch-{patch_index}'))
+    return clones_directory
 
-    number_of_threads = int(args.t)
-
-    with open(bugs_path, 'r') as f:
-        bugs = json.load(f)
-
-    with open(patches_path, 'r') as f:
-        patches = json.load(f)
-
-
-    for bug_id in tqdm(bugs):
-        project = bug_id.split('-')[0]
-        bug_number = bug_id.split('-')[1]
-        all_patches = patches[bug_id]
-
-        if os.path.exists('tmp'):
-            shutil.rmtree('tmp')
-
-        validation_results_path = os.path.join('validation_results', bug_id)
-        create_patch_directories(validation_results_path)
-
-        checkout_defects4j_project(project, bug_number, f'tmp/original_projects/{project}-{bug_number}')
-        create_clones(all_patches, project, bug_number)
-
-        validators = []
-        validator_patches = []
-        for thread in range(number_of_threads):
-            validators.append(Validator(bug_id, bugs[bug_id], all_patches, validation_results_path, f'tmp/clones/{project}-{bug_number}'))
-            validator_patches.append([])
-
-        for patch_index, patch in enumerate(all_patches):
-            validator_patches[patch_index % number_of_threads].append(patch_index)
-
-        assert_disjoint(validator_patches)
-
-        threads = []
-
-        for thread in range(number_of_threads):
-            thread = threading.Thread(target=validators[thread].validate_patches, args=(validator_patches[thread],))
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
-
-def assert_disjoint(validator_patches):
-    for i, _ in enumerate(validator_patches):
-        for j, _ in enumerate(validator_patches):
-            if i != j:
-                assert len(set(validator_patches[i]).intersection(set(validator_patches[j]))) == 0, f"Patches {validator_patches[i]} and {validator_patches[j]} are not disjoint"
 
 def create_patch_directories(validation_results_path):
-    if not os.path.exists(os.path.join(validation_results_path, 'uncompilable')):
-        os.makedirs(os.path.join(validation_results_path, 'uncompilable'))
-    if not os.path.exists(os.path.join(validation_results_path, 'failing')):
-        os.makedirs(os.path.join(validation_results_path, 'failing'))
-    if not os.path.exists(os.path.join(validation_results_path, 'plausible')):
-        os.makedirs(os.path.join(validation_results_path, 'plausible'))
-        if not os.path.exists(os.path.join(validation_results_path, 'timeout')):
-            os.makedirs(os.path.join(validation_results_path, 'timeout'))
+    os.makedirs(os.path.join(validation_results_path, 'uncompilable'), exist_ok=True)
+    os.makedirs(os.path.join(validation_results_path, 'failing'), exist_ok=True)
+    os.makedirs(os.path.join(validation_results_path, 'plausible'), exist_ok=True)
+    os.makedirs(os.path.join(validation_results_path, 'timeout'), exist_ok=True)
 
-def create_clones(all_patches, project, bug_number):
-    for patch_index, patch in enumerate(all_patches):
-        if not os.path.exists(f'tmp/clones/{project}-{bug_number}'):
-            os.makedirs(f'tmp/clones/{project}-{bug_number}')
-        copy_tree(f'tmp/original_projects/{project}-{bug_number}',
-                  f'tmp/clones/{project}-{bug_number}/patch-{patch_index}')
+
+def validate_patch(bug, patch, clone_directory):
+    apply_patch(bug, patch, clone_directory)
+    compile_defects4j_project(clone_directory)
+    test_defects4j_project(clone_directory)
+    return passes_tests(clone_directory)
+
+def apply_patch(bug, patch, clone_directory):
+    project_file = bug['loc']
+    start_line = bug['start']
+    end_line = bug['end']
+
+    file_path = os.path.join(clone_directory, project_file)
+    with open(file_path, 'r', encoding="utf-8") as f:
+        lines = f.readlines()
+
+    new_lines = lines[:start_line - 1] + patch.splitlines(keepends=True) + lines[end_line:]
+
+    with open(file_path, 'w', encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+def compile_defects4j_project(clone_directory):
+    command = ["defects4j", "compile", '-w', clone_directory]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise CompileError(result.stderr)
+
+def test_defects4j_project(clone_directory):
+    command = ["defects4j", "test", '-w', clone_directory]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise TestError(result.stderr)
+
+def passes_tests(clone_directory):
+    with open(os.path.join(clone_directory, 'failing_tests'), 'r') as f:
+        return f.read() == ""
+
+def write_patch(validation_results_path, patch, patch_index, result):
+    path = os.path.join(validation_results_path, result, f'patch-{patch_index:03d}')
+    with open(path, 'w') as f:
+       f.write(patch)
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', type=str, required=True, help='bug dataset path')
