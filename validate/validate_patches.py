@@ -35,13 +35,14 @@ class Validator:
             try:
                 future = executor.submit(self.compile_defects4j_project, patch_index)
                 future.result(timeout=15 * 60)
+                future = executor.submit(self.test_defects4j_project, patch_index)
+                future.result(timeout=15 * 60)
             except TimeoutError:
                 self.write_patch(patch_index, 'timeout')
+                return
             except Exception as e:
                 self.write_patch(patch_index, 'uncompilable')
                 return
-
-        self.test_defects4j_project(patch_index)
         failing_tests_output = self.get_failing_tests_output(patch_index)
 
         if failing_tests_output == "":
