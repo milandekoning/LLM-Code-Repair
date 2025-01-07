@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import shutil
 import subprocess
+from subprocess import TimeoutExpired
 import os
 from distutils.dir_util import copy_tree
 
@@ -39,17 +40,18 @@ def main():
                 patch_evaluation = executor.submit(validate_patch, bugs[bug_id], patch, clone_directory)
                 patch_evaluations.append(patch_evaluation)
 
+            print('Evaluating patches...')
             for patch_index, patch_evaluation in tqdm(enumerate(patch_evaluations), total=len(patch_evaluations)):
                 try:
                     patch_passes_tests = patch_evaluation.result(timeout=15*60)
                     if patch_passes_tests:
-                        write_patch(validation_results_path, patch, patch_index, 'plausible')
+                        write_patch(validation_results_path, bug_patches[patch_index], patch_index, 'plausible')
                     else:
-                        write_patch(validation_results_path, patch, patch_index, 'failing')
+                        write_patch(validation_results_path, bug_patches[patch_index], patch_index, 'failing')
                 except CompileError:
-                    write_patch(validation_results_path, patch, patch_index, 'uncompilable')
-                except TimeoutError:
-                    write_patch(validation_results_path, patch, patch_index, 'timeout')
+                    write_patch(validation_results_path, bug_patches[patch_index], patch_index, 'uncompilable')
+                except (TimeoutError, TimeoutExpired):
+                    write_patch(validation_results_path, bug_patches[patch_index], patch_index, 'timeout')
 
 
 
@@ -81,7 +83,8 @@ def checkout_defects4j_project(project, bug_number, working_directory):
 
 def create_clones(project, bug_number, patches, original_directory):
     clones_directory = os.path.join('tmp', 'clones', f'{project}-{bug_number}')
-    for patch_index, patch in enumerate(patches):
+    print('Creating project clones...')
+    for patch_index, patch in tqdm(enumerate(patches), total=len(patches)):
         os.makedirs(clones_directory, exist_ok=True)
         copy_tree(original_directory, os.path.join(clones_directory, f'patch-{patch_index}'))
     return clones_directory
@@ -116,13 +119,13 @@ def apply_patch(bug, patch, clone_directory):
 
 def compile_defects4j_project(clone_directory):
     command = ["defects4j", "compile", '-w', clone_directory]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10*60)
     if result.returncode != 0:
         raise CompileError(result.stderr)
 
 def test_defects4j_project(clone_directory):
     command = ["defects4j", "test", '-w', clone_directory]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10*60)
     if result.returncode != 0:
         raise TestError(result.stderr)
 
