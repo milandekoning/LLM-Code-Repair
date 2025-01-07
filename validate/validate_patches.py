@@ -72,6 +72,7 @@ def setup_project(bug_id, patches):
     return clones_directory, validation_results_path
 
 def clean_tmp_directory(tmp_directory):
+    print('Cleaning up tmp directory...')
     if os.path.exists(tmp_directory):
         shutil.rmtree(tmp_directory)
 
