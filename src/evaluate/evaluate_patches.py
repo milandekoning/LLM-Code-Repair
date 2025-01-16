@@ -33,8 +33,8 @@ class Patch:
         self.function = function
 
 class Bug:
-    def __init__(self, bug_id: str, bug: dict, checkout_lock: threading.Lock):
-        self.id = bug_id
+    def __init__(self, bug: dict, checkout_lock: threading.Lock):
+        self.id = bug['id']
         self.bug = bug
         self.project = bug['project']
         self.number = bug['number']
@@ -189,7 +189,7 @@ def create_evaluation_queue(bugs, patches, working_directory, locks):
         for prompt_index, prompt_patches in enumerate(bug_patches):
             for patch_index, patched_function in enumerate(prompt_patches):
                 patch = Patch(prompt_index, patch_index, patched_function)
-                bug = Bug(bug_id, bugs[bug_id], locks[bug_id])
+                bug = Bug(bugs[bug_id], locks[bug_id])
                 queue.append(PatchEvaluation(bug, patch, working_directory))
     return queue
 
