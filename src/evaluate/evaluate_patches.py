@@ -4,10 +4,10 @@ import argparse
 import threading
 import shutil
 import subprocess
+import random
 
 from tqdm import tqdm
 from subprocess import TimeoutExpired
-from distutils.dir_util import copy_tree
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
@@ -67,8 +67,7 @@ class PatchEvaluation:
         with self.bug.checkout_lock:
             if not os.path.exists(self.original_directory):
                 self.checkout_project()
-        os.makedirs(self.clone_directory, exist_ok=True)
-        copy_tree(self.original_directory, self.clone_directory)
+        shutil.copytree(self.original_directory, self.clone_directory, dirs_exist_ok=True)
 
     def checkout_project(self):
         command = ["defects4j", "checkout", "-p", self.bug.project, "-v", f"{self.bug.number}b", "-w",
@@ -109,7 +108,8 @@ class PatchEvaluation:
 
     def await_result(self):
         try:
-            passes_tests = self.future.result()
+            print(f"awaiting bug: {self.bug.id}, patch {self.patch.prompt_index}-{self.patch.patch_index}")
+            passes_tests = self.future.result(timeout=15*60)
             if passes_tests:
                 self.result = EvaluationResult.PLAUSIBLE
             else:
@@ -148,7 +148,7 @@ class PatchEvaluation:
 def main():
     bugs_path = args.b
     patches_path = args.p
-    number_of_threads = int(args.t)
+    number_of_threads = args.t
 
     with open(bugs_path, 'r') as f:
         bugs = json.load(f)
@@ -171,7 +171,7 @@ def main():
         for patch_evaluation in tqdm(patch_evaluation_queue):
             patch_evaluation.await_result()
             patch_evaluation.write_result()
-            patch_evaluation.clean(int(args.ppb))
+            patch_evaluation.clean(args.ppb)
 
     safe_remove(working_directory)
 
@@ -191,6 +191,8 @@ def create_evaluation_queue(bugs, patches, working_directory, locks):
                 patch = Patch(prompt_index, patch_index, patched_function)
                 bug = Bug(bugs[bug_id], locks[bug_id])
                 queue.append(PatchEvaluation(bug, patch, working_directory))
+    # Reduces wait for checkout during execution.
+    random.shuffle(queue)
     return queue
 
 def safe_remove(path):
@@ -201,9 +203,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', type=str, required=True, help='bug dataset path')
     parser.add_argument('-p', type=str, required=True, help='patches path')
-    parser.add_argument('-r', type=str, required=True, help='results path')
+    parser.add_argument('-r', type=int, required=True, help='results path')
     parser.add_argument('-t', type=str, required=True, help='number of threads')
-    parser.add_argument('-ppb', type=str, required=False, help='patches per bug', default=50)
+    parser.add_argument('-ppb', type=int, required=False, help='patches per bug', default=50)
     return parser.parse_args()
 
 if __name__ == '__main__':
