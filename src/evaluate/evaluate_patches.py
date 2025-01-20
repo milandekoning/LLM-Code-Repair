@@ -132,16 +132,8 @@ class PatchEvaluation:
         with open(path, 'w') as f:
             f.write(self.patch.function)
 
-    def clean(self, patches_per_bug):
+    def clean(self):
         safe_remove(self.clone_directory)
-        if self.project_can_be_removed(patches_per_bug):
-            safe_remove(self.original_directory)
-
-    def project_can_be_removed(self, patches_per_bug):
-        # Count the amount of patches in the results to determine whether all patches have been evaluated.
-        bug_results_path = os.path.join(self.results_path, self.bug.project, self.bug.number)
-        amount_of_patches = sum(len(files) for _, _, files in os.walk(bug_results_path))
-        return amount_of_patches == patches_per_bug
 
 
 
@@ -171,7 +163,7 @@ def main():
         for patch_evaluation in tqdm(patch_evaluation_queue):
             patch_evaluation.await_result()
             patch_evaluation.write_result()
-            patch_evaluation.clean(args.ppb)
+            patch_evaluation.clean()
 
     safe_remove(working_directory)
 
@@ -205,7 +197,6 @@ def parse_arguments():
     parser.add_argument('-p', type=str, required=True, help='patches path')
     parser.add_argument('-r', type=int, required=True, help='results path')
     parser.add_argument('-t', type=str, required=True, help='number of threads')
-    parser.add_argument('-ppb', type=int, required=False, help='patches per bug', default=50)
     return parser.parse_args()
 
 if __name__ == '__main__':
