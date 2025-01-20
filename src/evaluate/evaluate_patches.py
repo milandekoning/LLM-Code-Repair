@@ -108,7 +108,6 @@ class PatchEvaluation:
 
     def await_result(self):
         try:
-            print(f"awaiting bug: {self.bug.id}, patch {self.patch.prompt_index}-{self.patch.patch_index}")
             passes_tests = self.future.result(timeout=15*60)
             if passes_tests:
                 self.result = EvaluationResult.PLAUSIBLE
