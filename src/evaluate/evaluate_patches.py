@@ -195,8 +195,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', type=str, required=True, help='bug dataset path')
     parser.add_argument('-p', type=str, required=True, help='patches path')
-    parser.add_argument('-r', type=int, required=True, help='results path')
-    parser.add_argument('-t', type=str, required=True, help='number of threads')
+    parser.add_argument('-r', type=str, required=True, help='results path')
+    parser.add_argument('-t', type=int, required=True, help='number of threads')
     return parser.parse_args()
 
 if __name__ == '__main__':
